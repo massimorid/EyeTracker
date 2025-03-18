@@ -71,3 +71,13 @@ while True:
 # Release the capture and close windows
 cap.release()
 cv2.destroyAllWindows()
+
+
+
+
+
+# To do:
+# Display visual indicators on the screen showing where the user is looking
+# example: add some text in the terminal("Looking Left", "Looking Right", "Looking Center")
+
+# Do report
