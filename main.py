@@ -1,101 +1,117 @@
 import cv2
+import mediapipe as mp
 import numpy as np
-import pyautogui
+import time
 
-# Initialize webcam
+mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
+
 cap = cv2.VideoCapture(0)
 
-# Get screen dimensions
-screen_width, screen_height = pyautogui.size()
+# Eye landmarks
+left_eye_outer, left_eye_inner = 33, 133
+right_eye_outer, right_eye_inner = 362, 263
+left_iris_indices = [474, 475, 476, 477]
+right_iris_indices = [469, 470, 471, 472]
 
-# Load Haar Cascade classifiers for face and eye detection
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+look_times = {"Left": 0, "Middle": 0, "Right": 0}
+duration = 30  # seconds
 
-while True:
-    # Capture frame-by-frame
+def get_landmark_px(landmark, shape):
+    return int(landmark.x * shape[1]), int(landmark.y * shape[0])
+
+def get_iris_gaze_ratio(landmarks, eye_outer, eye_inner, iris_indices, shape):
+    eye_outer_px = get_landmark_px(landmarks[eye_outer], shape)
+    eye_inner_px = get_landmark_px(landmarks[eye_inner], shape)
+    eye_width = eye_inner_px[0] - eye_outer_px[0]
+
+    iris_pts = [get_landmark_px(landmarks[i], shape) for i in iris_indices]
+    iris_center = np.mean(iris_pts, axis=0)
+
+    iris_offset = iris_center[0] - eye_outer_px[0]
+    ratio = iris_offset / eye_width  # Normalize
+    return ratio, iris_center
+
+print("Calibration: Look straight ahead at the center for 3 seconds...")
+time.sleep(2)
+
+# Capture neutral (center) gaze values
+calibration_samples = []
+for _ in range(30):  # Collect frames for calibration
     ret, frame = cap.read()
     if not ret:
-        print("Error: Could not capture frame.")
         break
 
-    # Flip the frame horizontally for a mirror effect
-    frame = cv2.flip(frame, 1)
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(frame_rgb)
+    if results.multi_face_landmarks:
+        landmarks = results.multi_face_landmarks[0].landmark
+        left_ratio, _ = get_iris_gaze_ratio(landmarks, left_eye_outer, left_eye_inner, left_iris_indices, frame.shape)
+        right_ratio, _ = get_iris_gaze_ratio(landmarks, right_eye_outer, right_eye_inner, right_iris_indices, frame.shape)
+        avg_ratio = (left_ratio + right_ratio) / 2
+        calibration_samples.append(avg_ratio)
 
-    # Convert frame to grayscale
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+neutral_gaze = np.mean(calibration_samples)  # Baseline for center gaze
 
-    # Detect faces
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5, minSize=(30, 30))
+# Define dynamic thresholds based on calibration
+left_threshold = neutral_gaze + 0.10
+right_threshold = neutral_gaze - 0.10
 
-    eye_centers = []  # List to store pupil positions
+print(f"Calibration complete. Neutral gaze: {neutral_gaze:.2f}")
+print(f"Left threshold: {left_threshold:.2f}, Right threshold: {right_threshold:.2f}")
 
-    for (x, y, w, h) in faces:
-        # Region of interest (ROI) for the face
-        roi_gray = gray[y:y+h, x:x+w]
-        roi_color = frame[y:y+h, x:x+w]
+start_time = time.time()
+print("Starting eye-tracking session...")
 
-        # Detect eyes within the face region
-        eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
-
-        for (ex, ey, ew, eh) in eyes:
-            # Region of interest (ROI) for the eye
-            eye_gray = roi_gray[ey:ey+eh, ex:ex+ew]
-            eye_color = roi_color[ey:ey+eh, ex:ex+ew]
-
-            # Apply Gaussian blur to reduce noise
-            blurred = cv2.GaussianBlur(eye_gray, (7, 7), 0)
-
-            # Apply adaptive thresholding
-            thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-
-            # Find contours in the thresholded image
-            contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-            # Filter contours based on area (remove small and large noise)
-            min_contour_area = 50  
-            max_contour_area = 500  
-            contours = [cnt for cnt in contours if min_contour_area < cv2.contourArea(cnt) < max_contour_area]
-
-            if contours:
-                # Find the largest contour (assumed to be the pupil)
-                largest_contour = max(contours, key=cv2.contourArea)
-
-                # Get the minimum enclosing circle for the largest contour
-                (cx, cy), radius = cv2.minEnclosingCircle(largest_contour)
-
-                # Convert cx, cy to absolute position in frame
-                abs_cx, abs_cy = x + ex + int(cx), y + ey + int(cy)
-                
-                # Store the detected pupil position
-                eye_centers.append((abs_cx, abs_cy))
-
-                # Draw the circle around the pupil
-                cv2.circle(eye_color, (int(cx), int(cy)), int(radius), (255, 0, 0), 2)
-
-                # Draw crosshairs for pupil tracking
-                cv2.line(eye_color, (int(cx) - 10, int(cy)), (int(cx) + 10, int(cy)), (0, 255, 0), 2)  
-                cv2.line(eye_color, (int(cx), int(cy) - 10), (int(cx), int(cy) + 10), (0, 255, 0), 2)  
-
-    # Compute the average pupil position
-    if len(eye_centers) > 0:
-        avg_x = int(np.mean([pt[0] for pt in eye_centers]))
-        avg_y = int(np.mean([pt[1] for pt in eye_centers]))
-
-        # Normalize pupil coordinates to screen dimensions
-        mapped_x = int((avg_x / frame.shape[1]) * screen_width)
-        mapped_y = int((avg_y / frame.shape[0]) * screen_height)
-
-        # Draw cursor on the screen (a red dot)
-        cv2.circle(frame, (avg_x, avg_y), 10, (0, 0, 255), -1)
-
-    # Display the frame
-    cv2.imshow('Eye Tracking', frame)
-
-    # Exit on 'q' key press
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+while time.time() - start_time < duration:
+    ret, frame = cap.read()
+    if not ret:
         break
 
-# Release the capture and close windows
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(frame_rgb)
+    h, w, _ = frame.shape
+    zone = "Unknown"
+
+    third_w = w // 3
+    cv2.rectangle(frame, (0, 0), (third_w, h), (255, 0, 0), 2)       # Left
+    cv2.rectangle(frame, (third_w, 0), (2*third_w, h), (0, 255, 0), 2)  # Middle
+    cv2.rectangle(frame, (2*third_w, 0), (w, h), (0, 0, 255), 2)     # Right
+
+    if results.multi_face_landmarks:
+        landmarks = results.multi_face_landmarks[0].landmark
+        left_ratio, left_iris_px = get_iris_gaze_ratio(landmarks, left_eye_outer, left_eye_inner, left_iris_indices, (h, w))
+        right_ratio, right_iris_px = get_iris_gaze_ratio(landmarks, right_eye_outer, right_eye_inner, right_iris_indices, (h, w))
+
+        # Draw both iris centers
+        cv2.circle(frame, (int(left_iris_px[0]), int(left_iris_px[1])), 5, (0, 255, 0), -1)
+        cv2.circle(frame, (int(right_iris_px[0]), int(right_iris_px[1])), 5, (0, 255, 0), -1)
+
+        avg_ratio = (left_ratio + right_ratio) / 2
+
+        # Determine zone based on calibrated thresholds
+        if avg_ratio < right_threshold:
+            zone = "Right"
+        elif avg_ratio > left_threshold:
+            zone = "Left"
+        else:
+            zone = "Middle"
+
+        look_times[zone] += 1
+        cv2.putText(frame, f"Gaze: {zone} ({avg_ratio:.2f})", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+    cv2.imshow("Eye Tracking", frame)
+    if cv2.waitKey(1) & 0xFF == 27:
+        break
+
 cap.release()
 cv2.destroyAllWindows()
+
+# Normalize time
+for k in look_times:
+    look_times[k] = round(look_times[k] / 30, 2)
+
+print("\n=== Eye Tracking Results ===")
+for k, v in look_times.items():
+    print(f"{k}: {v} seconds")
