@@ -3,115 +3,135 @@ import mediapipe as mp
 import numpy as np
 import time
 
+# Initialize Mediapipe 
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(refine_landmarks=True)
+face_mesh_model = mp_face_mesh.FaceMesh(refine_landmarks=True)
 
-cap = cv2.VideoCapture(0)
+# Start webcam
+webcam = cv2.VideoCapture(0)
 
-# Eye landmarks
-left_eye_outer, left_eye_inner = 33, 133
-right_eye_outer, right_eye_inner = 362, 263
-left_iris_indices = [474, 475, 476, 477]
-right_iris_indices = [469, 470, 471, 472]
+# Landmark indices for eyes
+left_eye_outer_corner, left_eye_inner_corner = 33, 133
+right_eye_outer_corner, right_eye_inner_corner = 362, 263
+left_iris_landmarks = [474, 475, 476, 477]
+right_iris_landmarks = [469, 470, 471, 472]
 
+# Time spent looking in each direction
 look_times = {"Left": 0, "Middle": 0, "Right": 0}
-duration = 30  # seconds
+tracking_duration_seconds = 30
 
-def get_landmark_px(landmark, shape):
-    return int(landmark.x * shape[1]), int(landmark.y * shape[0])
+# Converts normalized Mediapipe landmarks to pixel coordinates
+def get_pixel_coordinates(landmark, image_shape):
+    return int(landmark.x * image_shape[1]), int(landmark.y * image_shape[0])
 
-def get_iris_gaze_ratio(landmarks, eye_outer, eye_inner, iris_indices, shape):
-    eye_outer_px = get_landmark_px(landmarks[eye_outer], shape)
-    eye_inner_px = get_landmark_px(landmarks[eye_inner], shape)
-    eye_width = eye_inner_px[0] - eye_outer_px[0]
+# Calculates iris position ratio within the eye
+def get_eye_gaze_ratio(landmarks, outer_corner_idx, inner_corner_idx, iris_indices, image_shape):
+    outer_corner = get_pixel_coordinates(landmarks[outer_corner_idx], image_shape)
+    inner_corner = get_pixel_coordinates(landmarks[inner_corner_idx], image_shape)
+    eye_width = inner_corner[0] - outer_corner[0]
 
-    iris_pts = [get_landmark_px(landmarks[i], shape) for i in iris_indices]
-    iris_center = np.mean(iris_pts, axis=0)
+    iris_points = [get_pixel_coordinates(landmarks[i], image_shape) for i in iris_indices]
+    iris_center = np.mean(iris_points, axis=0)
 
-    iris_offset = iris_center[0] - eye_outer_px[0]
-    ratio = iris_offset / eye_width  # Normalize
+    iris_offset = iris_center[0] - outer_corner[0]
+    ratio = iris_offset / eye_width
     return ratio, iris_center
 
-print("Calibration: Look straight ahead at the center for 3 seconds...")
+# Calibration prompt
+print("Calibration: Please look straight in the center for 3 seconds")
 time.sleep(2)
 
-# Capture neutral (center) gaze values
-calibration_samples = []
-for _ in range(30):  # Collect frames for calibration
-    ret, frame = cap.read()
-    if not ret:
+calibration_ratios = []
+
+# Collect 30 frames of center gaze
+for _ in range(30):
+    frame_captured, calibration_image = webcam.read()
+    if not frame_captured:
         break
 
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(frame_rgb)
-    if results.multi_face_landmarks:
-        landmarks = results.multi_face_landmarks[0].landmark
-        left_ratio, _ = get_iris_gaze_ratio(landmarks, left_eye_outer, left_eye_inner, left_iris_indices, frame.shape)
-        right_ratio, _ = get_iris_gaze_ratio(landmarks, right_eye_outer, right_eye_inner, right_iris_indices, frame.shape)
-        avg_ratio = (left_ratio + right_ratio) / 2
-        calibration_samples.append(avg_ratio)
+    rgb_calibration_image = cv2.cvtColor(calibration_image, cv2.COLOR_BGR2RGB)
+    detection_result = face_mesh_model.process(rgb_calibration_image)
 
-neutral_gaze = np.mean(calibration_samples)  # Baseline for center gaze
+    if detection_result.multi_face_landmarks:
+        landmarks = detection_result.multi_face_landmarks[0].landmark
+        left_eye_ratio, _ = get_eye_gaze_ratio(landmarks, left_eye_outer_corner, left_eye_inner_corner, left_iris_landmarks, calibration_image.shape)
+        right_eye_ratio, _ = get_eye_gaze_ratio(landmarks, right_eye_outer_corner, right_eye_inner_corner, right_iris_landmarks, calibration_image.shape)
+        average_eye_ratio = (left_eye_ratio + right_eye_ratio) / 2
+        calibration_ratios.append(average_eye_ratio)
 
-# Define dynamic thresholds based on calibration
-left_threshold = neutral_gaze + 0.10
-right_threshold = neutral_gaze - 0.10
+# Calculate neutral gaze and thresholds
+neutral_gaze_ratio = np.mean(calibration_ratios)
+left_gaze_threshold = neutral_gaze_ratio + 0.10
+right_gaze_threshold = neutral_gaze_ratio - 0.10
 
-print(f"Calibration complete. Neutral gaze: {neutral_gaze:.2f}")
-print(f"Left threshold: {left_threshold:.2f}, Right threshold: {right_threshold:.2f}")
+print(f"Calibration completed great job")
+print(f"Neutral gaze ratio: {neutral_gaze_ratio:.2f}")
+print(f"Left threshold: {left_gaze_threshold:.2f}, Right threshold: {right_gaze_threshold:.2f}")
 
 start_time = time.time()
-print("Starting eye-tracking session...")
+print("Tracking started. Press 'q' or ESC to quit early.")
 
-while time.time() - start_time < duration:
-    ret, frame = cap.read()
-    if not ret:
+# Begin gaze tracking
+while time.time() - start_time < tracking_duration_seconds:
+    frame_captured, video_frame = webcam.read()
+    if not frame_captured:
         break
 
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(frame_rgb)
-    h, w, _ = frame.shape
-    zone = "Unknown"
+    rgb_video_frame = cv2.cvtColor(video_frame, cv2.COLOR_BGR2RGB)
+    detection_result = face_mesh_model.process(rgb_video_frame)
 
-    third_w = w // 3
-    cv2.rectangle(frame, (0, 0), (third_w, h), (255, 0, 0), 2)       # Left
-    cv2.rectangle(frame, (third_w, 0), (2*third_w, h), (0, 255, 0), 2)  # Middle
-    cv2.rectangle(frame, (2*third_w, 0), (w, h), (0, 0, 255), 2)     # Right
+    image_height, image_width, _ = video_frame.shape
+    gaze_direction = "Unknown"
 
-    if results.multi_face_landmarks:
-        landmarks = results.multi_face_landmarks[0].landmark
-        left_ratio, left_iris_px = get_iris_gaze_ratio(landmarks, left_eye_outer, left_eye_inner, left_iris_indices, (h, w))
-        right_ratio, right_iris_px = get_iris_gaze_ratio(landmarks, right_eye_outer, right_eye_inner, right_iris_indices, (h, w))
+    # Draw visual guidance zones
+    one_third_width = image_width // 3
+    cv2.rectangle(video_frame, (0, 0), (one_third_width, image_height), (255, 0, 0), 2)
+    cv2.rectangle(video_frame, (one_third_width, 0), (2 * one_third_width, image_height), (0, 255, 0), 2)
+    cv2.rectangle(video_frame, (2 * one_third_width, 0), (image_width, image_height), (0, 0, 255), 2)
 
-        # Draw both iris centers
-        cv2.circle(frame, (int(left_iris_px[0]), int(left_iris_px[1])), 5, (0, 255, 0), -1)
-        cv2.circle(frame, (int(right_iris_px[0]), int(right_iris_px[1])), 5, (0, 255, 0), -1)
+    if detection_result.multi_face_landmarks:
+        landmarks = detection_result.multi_face_landmarks[0].landmark
+        left_eye_ratio, left_iris_center = get_eye_gaze_ratio(landmarks, left_eye_outer_corner, left_eye_inner_corner, left_iris_landmarks, (image_height, image_width))
+        right_eye_ratio, right_iris_center = get_eye_gaze_ratio(landmarks, right_eye_outer_corner, right_eye_inner_corner, right_iris_landmarks, (image_height, image_width))
 
-        avg_ratio = (left_ratio + right_ratio) / 2
+        # Draw iris circles
+        cv2.circle(video_frame, (int(left_iris_center[0]), int(left_iris_center[1])), 5, (0, 255, 0), -1)
+        cv2.circle(video_frame, (int(right_iris_center[0]), int(right_iris_center[1])), 5, (0, 255, 0), -1)
 
-        # Determine zone based on calibrated thresholds
-        if avg_ratio < right_threshold:
-            zone = "Right"
-        elif avg_ratio > left_threshold:
-            zone = "Left"
+        average_eye_ratio = (left_eye_ratio + right_eye_ratio) / 2
+
+        # Decide gaze direction
+        if average_eye_ratio < right_gaze_threshold:
+            gaze_direction = "Left"
+        elif average_eye_ratio > left_gaze_threshold:
+            gaze_direction = "Right"
         else:
-            zone = "Middle"
+            gaze_direction = "Middle"
 
-        look_times[zone] += 1
-        cv2.putText(frame, f"Gaze: {zone} ({avg_ratio:.2f})", (10, 30),
+        # Track time spent in each zone
+        look_times[gaze_direction] += 1
+
+        # Display gaze info
+        cv2.putText(video_frame, f"Gaze: {gaze_direction} ({average_eye_ratio:.2f})", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-    cv2.imshow("Eye Tracking", frame)
-    if cv2.waitKey(1) & 0xFF == 27:
+    # Display webcam feed
+    cv2.imshow("Eye Tracking", video_frame)
+
+    # Exit on ESC or 'q'
+    key_pressed = cv2.waitKey(1) & 0xFF
+    if key_pressed == 27 or key_pressed == ord('q'):
         break
 
-cap.release()
+# Release camera and close window
+webcam.release()
 cv2.destroyAllWindows()
 
-# Normalize time
-for k in look_times:
-    look_times[k] = round(look_times[k] / 30, 2)
+# Convert frame counts to seconds (~30 FPS)
+for zone in look_times:
+    look_times[zone] = round(look_times[zone] / 30, 2)
 
+# Print session summary
 print("\n=== Eye Tracking Results ===")
-for k, v in look_times.items():
-    print(f"{k}: {v} seconds")
+for zone, time_spent in look_times.items():
+    print(f"{zone}: {time_spent} seconds")
