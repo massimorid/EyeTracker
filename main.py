@@ -2,13 +2,15 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
+import os
 
 # Initialize Mediapipe 
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh_model = mp_face_mesh.FaceMesh(refine_landmarks=True)
 
-# Start webcam
-webcam = cv2.VideoCapture(0)
+# Start webcam using environment variable
+webcam_index = int(os.getenv('WEBCAM_INDEX', '0'))
+webcam = cv2.VideoCapture(webcam_index)
 
 # Landmark indices for eyes
 left_eye_outer_corner, left_eye_inner_corner = 33, 133
@@ -21,9 +23,9 @@ look_times = {"Left": 0, "Middle": 0, "Right": 0}
 tracking_duration_seconds = 30
 
 
-img1 = cv2.imread("cocacola.jpg")
-img2 = cv2.imread("download.jpg")
-img3 = cv2.imread("fanta.jpg")
+img1 = cv2.imread("images/cocacola.jpg")
+img2 = cv2.imread("images/download.jpg")
+img3 = cv2.imread("images/fanta.jpg")
 
 # Resize if needed (e.g., to 100x100)
 img1 = cv2.resize(img1, (100, 100))
